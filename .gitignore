@@ -1,0 +1,32 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Local aai state (normally outside the repository; ignore if XDG dirs point here)
+usage.sqlite3
+usage.sqlite3-*
+.cache/
+.config/
+.transcripts/
+
+# Media and generated transcription artifacts
+*.mp3
+*.wav
+*.m4a
+*.mp4
+*.mov
+*.webm
+*.srt
+*.vtt
+transcript*.json
