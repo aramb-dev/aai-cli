@@ -1,7 +1,9 @@
 """Deliberately small terminal workflow for the common 'transcribe this file' case."""
-import json, sys
+import json, os, sys, time
 from pathlib import Path
 from .core import base, fail, request
+
+PENDING = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "aai" / "pending-exports.json"
 
 def run(args):
     if not sys.stdin.isatty(): fail("--interactive requires a terminal", 12, False, "Pass SOURCE and explicit flags in non-interactive automation.")
@@ -17,6 +19,42 @@ def run(args):
     if args.exports is None: fail("unknown export choice", 12, False, "Choose 1, 2, or 3.")
     args.wait = True
     return args
+
+def _load_pending():
+    return json.loads(PENDING.read_text()) if PENDING.exists() else []
+
+def _save_pending(items):
+    PENDING.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    PENDING.write_text(json.dumps(items, indent=2) + "\n"); os.chmod(PENDING, 0o600)
+
+def queue_exports(result, source, kinds, output_dir, region):
+    """Persist requested exports when --no-wait returns a queued transcript."""
+    if not kinds or not result.get("id"): return None
+    items = _load_pending()
+    item = {"transcript_id": result["id"], "source": source, "exports": kinds, "out_dir": output_dir, "region": region}
+    items = [old for old in items if old["transcript_id"] != item["transcript_id"]] + [item]
+    _save_pending(items)
+    return item
+
+def pending():
+    """Read the durable queue without an API request."""
+    return {"pending_file": str(PENDING), "pending": _load_pending()}
+
+def process_pending(wait=False, interval=3):
+    """Execute the durable queue. Completed entries are exported then removed."""
+    items, remaining, processed = _load_pending(), [], []
+    for item in items:
+        result = request("GET", f"/v2/transcript/{item['transcript_id']}", base_url=base(item["region"]))
+        while wait and result.get("status") not in ("completed", "error"):
+            print(f"aai: pending export {item['transcript_id']} is {result.get('status')}; polling every {interval:g}s", file=sys.stderr)
+            time.sleep(interval)
+            result = request("GET", f"/v2/transcript/{item['transcript_id']}", base_url=base(item["region"]))
+        if result.get("status") == "completed":
+            processed.append({"transcript_id": item["transcript_id"], "exports": save_exports(result, item["source"], item["exports"], item.get("out_dir"), item["region"])})
+        elif result.get("status") == "error": processed.append({"transcript_id": item["transcript_id"], "error": result.get("error", "transcription failed")})
+        else: remaining.append({**item, "status": result.get("status")})
+    if wait or processed: _save_pending([{k:v for k,v in item.items() if k != "status"} for item in remaining])
+    return {"pending_file": str(PENDING), "pending": remaining, "processed": processed}
 
 def save_exports(result, source, kinds, output_dir, region):
     """Write post-completion exports next to local input, or to --out-dir."""

@@ -43,7 +43,16 @@ aai transcribe meeting.mp3 --no-wait
 aai submit meeting.mp3
 ```
 
-`--export` supports `json`, `text`, `srt`, `vtt`, `paragraphs`, and `sentences`. Exports run only after a completed transcript, never during `--dry-run` or `--no-wait`.
+`--export` supports `json`, `text`, `srt`, `vtt`, `paragraphs`, and `sentences`. With the normal default wait, exports run immediately after completion. With `--no-wait`, requested exports are placed in a durable local pending queue instead of being lost:
+
+```sh
+aai transcribe meeting.mp3 --no-wait --export json --export srt
+aai exports                 # inspect queued transcript IDs and requested files; no API call
+aai exports --run           # export every job that has completed; leave processing jobs queued
+aai exports --run --wait    # poll all queued jobs, then export or report their API error
+```
+
+The queue is at `~/.local/share/aai/pending-exports.json` (or `XDG_DATA_HOME/aai/pending-exports.json`). Completed and failed entries are removed by `aai exports --run`; processing entries remain for a later run. Exports never run during `--dry-run`.
 
 ## Architecture
 

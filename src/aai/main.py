@@ -60,9 +60,13 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
         p = parser(sub, name, text); p.add_argument("id", help="AssemblyAI transcript UUID"); p.add_argument("--region", choices=["global", "eu"], default="global", help="endpoint data residency")
     p = parser(sub, "list", "List transcript jobs. Pagination URLs are returned in page_details.")
     p.add_argument("--limit", type=int, help="number of jobs to return (must be >= 1)"); p.add_argument("--status", help="filter status, e.g. queued, processing, completed, error"); p.add_argument("--created-on", help="filter by creation date accepted by the API"); p.add_argument("--region", choices=["global", "eu"], default="global", help="endpoint data residency")
-    p = parser(sub, "export", "Retrieve a completed transcript's derived result.")
+    p = parser(sub, "export", "Retrieve one completed transcript's derived result.")
     p.add_argument("id", help="AssemblyAI transcript UUID"); p.add_argument("kind", choices=["sentences", "paragraphs", "srt", "vtt", "redacted-audio"], help="result type; srt/vtt are caption files")
     p.add_argument("--out", help="write srt or vtt bytes to this path instead of stdout"); p.add_argument("--region", choices=["global", "eu"], default="global", help="endpoint data residency")
+    p = parser(sub, "exports", "Inspect or process automatic exports queued by `transcribe --no-wait --export ...`.")
+    p.add_argument("--run", action="store_true", help="check each queued transcript and write exports for completed jobs")
+    p.add_argument("--wait", action="store_true", help="with --run, poll queued jobs until completed or error")
+    p.add_argument("--interval", type=float, default=3, help="seconds between pending-export polls (default: %(default)s)")
     p = parser(sub, "search", "Find individual terms or phrases (up to five words each) in a completed transcript.")
     p.add_argument("id", help="AssemblyAI transcript UUID"); p.add_argument("words", nargs="+", help="one or more search terms"); p.add_argument("--region", choices=["global", "eu"], default="global", help="endpoint data residency")
 
@@ -106,9 +110,13 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
         if not args.dry_run and args.wait:
             written = interactive.save_exports(result, args.source, args.exports, args.out_dir, args.region)
             if written: result["_aai_exports"] = written
+        elif not args.dry_run and args.exports:
+            queued = interactive.queue_exports(result, args.source, args.exports, args.out_dir, args.region)
+            if queued: result["_aai_pending_exports"] = queued
     elif args.command == "submit": result = prerecorded.submit(args)
     elif args.command == "upload": result = prerecorded.upload(args.file, args.region)
     elif args.command in ("get", "list", "delete", "export", "search"): result = prerecorded.transcript(args)
+    elif args.command == "exports": result = interactive.process_pending(args.wait, args.interval) if args.run else interactive.pending()
     elif args.command == "sync": result = sync.transcribe(args)
     elif args.command == "token": result = realtime.token(args)
     elif args.command == "batch": result = batteries.batch(args)
