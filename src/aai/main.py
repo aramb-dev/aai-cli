@@ -98,7 +98,7 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
     if args.command == "transcribe" and not args.source: root.error("SOURCE is required unless using --interactive/-i")
     # A dry run is a hard no-write guarantee. transcribe/batch additionally inspect media/cost below.
     write_commands = {"upload", "submit", "delete", "sync", "chat", "stream", "ws"}
-    is_write = args.command in write_commands or (args.command == "request" and args.method.upper() not in ("GET", "HEAD"))
+    is_write = args.command in write_commands or (args.command == "request" and args.method.upper() not in ("GET", "HEAD")) or (args.command == "exports" and args.run)
     if args.dry_run and args.command not in ("transcribe", "batch") and is_write:
         result = {"ok": True, "dry_run": True, "command": args.command, "action": "No network write was made.", "next_step": "Remove --dry-run to execute after reviewing this command's arguments."}
         emit(result, compact=args.compact, output=getattr(args, "output", None), json_mode=args.json)
