@@ -21,6 +21,30 @@ aai doctor
 
 The package installs one `aai` executable. It has no runtime dependency for ordinary HTTP commands; Streaming and WebSocket commands require the optional `websockets` extra.
 
+## Fastest path: one file, one command
+
+`transcribe` waits and polls by default. This is the normal command for a human; `submit` is the non-waiting API-oriented command.
+
+```sh
+# Upload, submit, poll to completion, and print the transcript
+aai transcribe meeting.mp3
+
+# Guided terminal mode: choose plain/meeting/medical and choose automatic exports
+aai transcribe -i
+
+# Explicit non-interactive exports after completion
+aai transcribe meeting.mp3 --export json --export text --export srt
+# Files go beside meeting.mp3, or choose a destination:
+aai transcribe meeting.mp3 --export srt --export vtt --out-dir ./captions
+
+# API/automation mode: return the queued job without polling
+aai transcribe meeting.mp3 --no-wait
+# Equivalent low-level command:
+aai submit meeting.mp3
+```
+
+`--export` supports `json`, `text`, `srt`, `vtt`, `paragraphs`, and `sentences`. Exports run only after a completed transcript, never during `--dry-run` or `--no-wait`.
+
 ## Architecture
 
 

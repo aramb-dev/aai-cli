@@ -1,6 +1,6 @@
 import argparse
 from .core import base, body, emit, request
-from . import batteries, prerecorded, realtime, sync
+from . import batteries, interactive, prerecorded, realtime, sync
 
 FMT = argparse.RawDescriptionHelpFormatter
 ALL_FIELDS = """All request fields: use --set KEY=JSON_VALUE (dots create nested objects), or --params JSON / @file.json.
@@ -18,9 +18,9 @@ def add_payload(p):
     p.add_argument("--params", metavar="JSON|@FILE", help="complete JSON request object; @path reads a JSON file")
     p.add_argument("--set", action="append", default=[], metavar="KEY=JSON", help="set/override any JSON field; repeatable; supports dotted nested keys")
 
-def stt(sub, name, description):
+def stt(sub, name, description, optional_source=False):
     p = parser(sub, name, description + "\n\n" + ALL_FIELDS)
-    p.add_argument("source", help="local audio/video path (uploaded as raw binary), or http(s) media URL")
+    p.add_argument("source", nargs="?" if optional_source else None, help="local audio/video path (uploaded as raw binary), or http(s) media URL")
     p.add_argument("--region", choices=["global", "eu"], default="global", help="data-residency endpoint (default: %(default)s)")
     add_payload(p)
     return p
@@ -44,9 +44,12 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
     root.add_argument("--dry-run", action="store_true", help="preview a write command; command-level --dry-run is also accepted")
     sub = root.add_subparsers(dest="command", required=True, title="commands")
 
-    p = stt(sub, "transcribe", "Async pre-recorded STT: upload/submit media, optionally poll until completed.")
-    p.add_argument("--wait", action="store_true", help="poll status until completed or error, then print final transcript")
-    p.add_argument("--interval", type=float, default=3, help="seconds between polls with --wait (default: %(default)s)")
+    p = stt(sub, "transcribe", "Async pre-recorded STT: upload/submit media and wait for the final transcript by default. Use -i for guided terminal mode.", optional_source=True)
+    wait = p.add_mutually_exclusive_group(); wait.add_argument("--wait", dest="wait", action="store_true", default=True, help="wait/poll until completed (default)"); wait.add_argument("--no-wait", dest="wait", action="store_false", help="return queued job immediately")
+    p.add_argument("-i", "--interactive", action="store_true", help="guided terminal workflow: choose source, profile, and automatic exports")
+    p.add_argument("--interval", type=float, default=3, help="seconds between polling requests (default: %(default)s)")
+    p.add_argument("--export", dest="exports", action="append", choices=["json", "text", "srt", "vtt", "paragraphs", "sentences"], default=[], help="save completed result beside input; repeatable")
+    p.add_argument("--out-dir", help="directory for --export files (default: input directory; URLs use current directory)")
     cache = p.add_mutually_exclusive_group(); cache.add_argument("--cache", dest="cache", action="store_true", default=True, help="reuse/store completed local-file transcript cache (default)"); cache.add_argument("--no-cache", dest="cache", action="store_false", help="always submit local audio again")
     stt(sub, "submit", "Async pre-recorded STT: upload/submit media and print queued job immediately.")
 
@@ -87,6 +90,8 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
 
     args = root.parse_args()
     if args.json_errors: __import__("os").environ["AAI_JSON_ERRORS"] = "1"
+    if args.command == "transcribe" and args.interactive: args = interactive.run(args)
+    if args.command == "transcribe" and not args.source: root.error("SOURCE is required unless using --interactive/-i")
     # A dry run is a hard no-write guarantee. transcribe/batch additionally inspect media/cost below.
     write_commands = {"upload", "submit", "delete", "sync", "chat", "stream", "ws"}
     is_write = args.command in write_commands or (args.command == "request" and args.method.upper() not in ("GET", "HEAD"))
@@ -98,6 +103,9 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
         if args.source.startswith(("http://", "https://", "-")):
             result = ({"ok": True, "dry_run": True, "source": args.source, "request": body(args), "action": "No upload or transcript submission was made; remote/stdin duration and cache key cannot be determined locally."} if args.dry_run else prerecorded.submit(args))
         else: result = batteries.one(args.source, body(args), args.region, args.wait, args.cache, args.dry_run)
+        if not args.dry_run and args.wait:
+            written = interactive.save_exports(result, args.source, args.exports, args.out_dir, args.region)
+            if written: result["_aai_exports"] = written
     elif args.command == "submit": result = prerecorded.submit(args)
     elif args.command == "upload": result = prerecorded.upload(args.file, args.region)
     elif args.command in ("get", "list", "delete", "export", "search"): result = prerecorded.transcript(args)

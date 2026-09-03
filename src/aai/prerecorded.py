@@ -13,9 +13,15 @@ def submit(args):
     data["audio_url"] = args.source if args.source.startswith(("http://", "https://")) else upload(args.source, args.region)["upload_url"]
     result = request("POST", "/v2/transcript", data, base_url=base(args.region))
     if not getattr(args, "wait", False): return result
+    last_status = None
     while result.get("status") not in ("completed", "error"):
+        status = result.get("status", "unknown")
+        if status != last_status:
+            print(f"aai: transcript {result['id']} is {status}; polling every {args.interval:g}s", file=sys.stderr)
+            last_status = status
         time.sleep(args.interval)
         result = request("GET", f"/v2/transcript/{result['id']}", base_url=base(args.region))
+    print(f"aai: transcript {result['id']} {result.get('status')}", file=sys.stderr)
     return result
 
 def transcript(args):
