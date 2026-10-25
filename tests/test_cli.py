@@ -47,6 +47,10 @@ class Usage(unittest.TestCase):
         self.assertEqual(report["estimated_usd"], 1.0)
         self.assertEqual(report["cache_hits"], 1)
 
+    def test_cache_only_month_costs_zero(self):
+        batteries.record("a.mp3", "h", {"id": "1", "status": "completed"}, 3600, True, {})
+        self.assertEqual(batteries.usage(SimpleNamespace(month=None))["estimated_usd"], 0.0)
+
 
 class Sync(unittest.TestCase):
     def test_hosts_use_v1_transcribe_regions(self):
@@ -70,6 +74,11 @@ class Cli(unittest.TestCase):
         result = aai("--json-errors", "stream", "--sample-rate", "16000", "--chunk-ms", "20", env={"ASSEMBLYAI_API_KEY": "test"})
         self.assertEqual(result.returncode, 12)
         self.assertIn("--chunk-ms", json.loads(result.stderr)["error"])
+
+    def test_stream_rejects_missing_audio_before_connecting(self):
+        result = aai("--json-errors", "stream", "--sample-rate", "16000", "--audio", "/nonexistent/audio.pcm", env={"ASSEMBLYAI_API_KEY": "test"})
+        self.assertEqual(result.returncode, 12)
+        self.assertIn("cannot read --audio", json.loads(result.stderr)["error"])
 
     def test_dry_run_makes_no_request(self):
         with tempfile.TemporaryDirectory() as tmp:

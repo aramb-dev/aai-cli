@@ -102,6 +102,7 @@ def usage(args):
     with db() as conn:
         # Cache hits are reported separately: they never reached the API, so they are not billed audio.
         count, seconds, cached, cost, hits = conn.execute("SELECT count(*), coalesce(sum(CASE WHEN cache_hit = 0 THEN seconds END),0), coalesce(sum(CASE WHEN cache_hit = 1 THEN seconds END),0), sum(CASE WHEN cache_hit = 0 THEN estimated_usd END), coalesce(sum(cache_hit),0) FROM transcriptions" + clause, params).fetchone()
+    if count == hits: cost = 0.0  # nothing was submitted, so the cost is known to be zero
     return {"month": args.month, "transcriptions": count, "audio_seconds": seconds, "audio_minutes": round(seconds / 60, 2), "estimated_usd": round(cost, 4) if cost is not None else None, "cache_hits": hits, "cached_audio_seconds": cached, "ledger": str(DB), "pricing_note": None if cost is not None else f"Set estimated_usd_per_audio_hour in {CONFIG} to calculate spend."}
 
 def doctor():
