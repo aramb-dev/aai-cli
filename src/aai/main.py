@@ -4,10 +4,18 @@ from . import batteries, interactive, prerecorded, realtime, sync
 
 FMT = argparse.RawDescriptionHelpFormatter
 ALL_FIELDS = """All request fields: use --set KEY=JSON_VALUE (dots create nested objects), or --params JSON / @file.json.
-Examples: --set speaker_labels=true  --set keyterms_prompt='["Acme","Kubernetes"]'
+Examples: --set speaker_labels=true  --set language_code=ar  --set keyterms_prompt='["Acme","Kubernetes"]'
+          --set speech_models='["universal-3-5-pro","universal-2"]'
           --set speaker_options.min_speakers_expected=2
           --set speech_understanding.request.translation.target_languages='["es","de"]'
+          --set speech_understanding.request.summarization.summary_type=bullets
+Values are parsed as JSON; anything that is not valid JSON is sent as a plain string, so text needs no extra quotes.
 This escape hatch accepts every current and future API request property."""
+
+def version():
+    # Read from the package, not installed metadata, so the zipapp build reports it too.
+    from . import __version__
+    return __version__
 
 def parser(sub, name, description):
     p = sub.add_parser(name, description=description, formatter_class=FMT, help=description.split("\n", 1)[0])
@@ -29,14 +37,15 @@ def main():
     usage = """AssemblyAI command line client. Credentials come from ASSEMBLYAI_API_KEY.
 
 Common workflows:
-  aai transcribe meeting.mp3 --wait --set speaker_labels=true
-  aai transcribe https://example.test/call.wav --wait --set prompt='"Names: Ada, Linus"'
-  aai sync clip.wav --set language_code='"en"'
+  aai transcribe meeting.mp3 --set speaker_labels=true --export text --export srt
+  aai transcribe https://example.test/call.wav --set prompt='Names: Ada, Linus'
+  aai sync clip.wav --set language_codes='["en"]'
   aai chat --model MODEL --message system:'Be concise.' --message user:'Hello'
 Run 'aai COMMAND --help' for detailed options and examples.
 
 Automation: all successful structured results are JSON on stdout.  Use --compact for JSONL-friendly one-line output, --output FILE to avoid mixing data with shell output, and --json-errors for JSON error objects on stderr. A source/FILE value of '-' reads binary audio from stdin; --params - reads JSON from stdin."""
     root = argparse.ArgumentParser(prog="aai", description=usage, formatter_class=FMT)
+    root.add_argument("--version", action="version", version=f"aai {version()}")
     root.add_argument("--json", action="store_true", help="explicitly request JSON output (the default for structured results)")
     root.add_argument("--compact", action="store_true", help="emit structured JSON on exactly one line; suitable for JSONL/pipes")
     root.add_argument("--output", metavar="FILE", help="write final output to FILE instead of stdout")
@@ -44,7 +53,7 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
     root.add_argument("--dry-run", action="store_true", help="preview a write command; command-level --dry-run is also accepted")
     sub = root.add_subparsers(dest="command", required=True, title="commands")
 
-    p = stt(sub, "transcribe", "Async pre-recorded STT: upload/submit media and wait for the final transcript by default. Use -i for guided terminal mode.", optional_source=True)
+    p = stt(sub, "transcribe", "Async pre-recorded STT: upload/submit media and wait for the final transcript by default. Use -i for guided terminal mode.\nModels: the API defaults to speech_models [\"universal-3-5-pro\", \"universal-2\"]; languages Universal-3.5 Pro does not cover fall back to Universal-2.", optional_source=True)
     wait = p.add_mutually_exclusive_group(); wait.add_argument("--wait", dest="wait", action="store_true", default=True, help="wait/poll until completed (default)"); wait.add_argument("--no-wait", dest="wait", action="store_false", help="return queued job immediately")
     p.add_argument("-i", "--interactive", action="store_true", help="guided terminal workflow: choose source, profile, and automatic exports")
     p.add_argument("--interval", type=float, default=3, help="seconds between polling requests (default: %(default)s)")
@@ -70,8 +79,8 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
     p = parser(sub, "search", "Find individual terms or phrases (up to five words each) in a completed transcript.")
     p.add_argument("id", help="AssemblyAI transcript UUID"); p.add_argument("words", nargs="+", help="one or more search terms"); p.add_argument("--region", choices=["global", "eu"], default="global", help="endpoint data residency")
 
-    p = parser(sub, "sync", "Synchronous STT for a local 80 ms–120 s audio clip. Sends multipart audio + optional config.")
-    p.add_argument("file", help="local audio file; remote URLs are not supported by Sync API"); p.add_argument("--model", default="universal-3-5-pro", help="required X-AAI-Model value (default: %(default)s)"); p.add_argument("--content-type", default="audio/wav", help="audio MIME type for multipart upload (default: %(default)s)"); add_payload(p)
+    p = parser(sub, "sync", "Synchronous STT for a local 80 ms–20 min audio file (256 MB max). Sends multipart audio + optional config.\nConfig fields include language_codes, prompt, keyterms_prompt, timestamps, and sample_rate/channels for raw PCM.")
+    p.add_argument("file", help="local audio file; remote URLs are not supported by Sync API"); p.add_argument("--model", default="universal-3-5-pro", help="required X-AAI-Model value (default: %(default)s)"); p.add_argument("--content-type", help="audio MIME type for multipart upload (default: guessed from the file extension, else audio/wav)"); p.add_argument("--region", choices=["global", "us", "eu"], default="global", help="data-residency endpoint (default: %(default)s)"); add_payload(p)
     p = parser(sub, "token", "Mint a single-use Streaming v3 browser/mobile token; never expose the permanent key to clients.")
     p.add_argument("--expires", type=int, default=60, help="token expiry seconds (default: %(default)s)"); p.add_argument("--max-session", type=int, help="maximum downstream session duration in seconds (60–10800)"); p.add_argument("--region", choices=["global", "us", "eu"], default="global", help="streaming data residency")
     p = parser(sub, "chat", "Call the OpenAI-compatible AssemblyAI LLM Gateway /v1/chat/completions.\n\n" + ALL_FIELDS)
@@ -79,11 +88,11 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
     p = parser(sub, "request", "Raw escape hatch for any Pre-recorded STT REST endpoint.\n\nExample: aai request GET /v2/transcript/UUID\n" + ALL_FIELDS)
     p.add_argument("method", help="HTTP method, e.g. GET, POST, DELETE"); p.add_argument("path", help="API path, e.g. /v2/transcript/UUID"); p.add_argument("--query", action="append", default=[], metavar="KEY=VALUE", help="query string field; repeatable"); p.add_argument("--region", choices=["global", "eu"], default="global", help="endpoint data residency"); add_payload(p)
     p = parser(sub, "stream", "Streaming STT v3 over WebSocket. Requires: python3 -m pip install --user 'websockets>=12'\nInput must be raw signed 16-bit PCM (not a WAV container).")
-    p.add_argument("--audio", help="raw PCM s16le input file; omit for a receive-only socket"); p.add_argument("--sample-rate", type=int, required=True, help="PCM samples per second, e.g. 16000"); p.add_argument("--speech-model", default="universal-3-5-pro", help="Streaming v3 speech model (default: %(default)s)"); p.add_argument("--encoding", default="pcm_s16le", help="audio encoding (default: %(default)s)"); p.add_argument("--chunk-ms", type=int, default=100, help="audio bytes per send in milliseconds (default: %(default)s)"); p.add_argument("--region", choices=["global", "us", "eu"], default="global", help="streaming data residency"); p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="any Streaming v3 connection query parameter; repeatable")
+    p.add_argument("--audio", help="raw PCM s16le input file; omit for a receive-only socket"); p.add_argument("--sample-rate", type=int, required=True, help="PCM samples per second, e.g. 16000"); p.add_argument("--speech-model", default="universal-3-6-pro", help="Streaming v3 speech model: universal-3-6-pro, universal-3-5-pro, universal-streaming-english, universal-streaming-multilingual (default: %(default)s)"); p.add_argument("--encoding", default="pcm_s16le", help="audio encoding: pcm_s16le or pcm_mulaw (default: %(default)s)"); p.add_argument("--chunk-ms", type=int, default=100, help="milliseconds of audio per message, 50–1000; files are sent at real-time pace (default: %(default)s)"); p.add_argument("--region", choices=["global", "us", "eu"], default="global", help="streaming data residency"); p.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="any Streaming v3 connection query parameter; repeatable")
     p = parser(sub, "ws", "Generic authenticated WebSocket relay, including Voice Agent API and future WebSocket APIs.\nWith --stdin-json, forward newline-delimited JSON from stdin before printing server messages.")
     p.add_argument("url", help="WebSocket URL, e.g. wss://agents.assemblyai.com/v1/ws"); p.add_argument("--query", action="append", default=[], metavar="KEY=VALUE", help="URL query parameter; repeatable"); p.add_argument("--stdin-json", action="store_true", help="send newline-delimited JSON protocol events from stdin")
     p = parser(sub, "batch", "Transcribe every supported audio/video file under a directory with one shared config, content-hash cache, dry-run, progress, and usage ledger.\n\nExample: aai batch ~/projects/Any/media --glob '**/*.mp3' --wait --set speaker_labels=true\n" + ALL_FIELDS)
-    p.add_argument("directory", help="directory to scan recursively or non-recursively according to --glob"); p.add_argument("--glob", default="**/*", help="path glob relative to directory (default: %(default)s)"); p.add_argument("--region", choices=["global", "eu"], default="global", help="endpoint data residency"); p.add_argument("--wait", action="store_true", default=True, help="wait for each result before next file (default)"); cache = p.add_mutually_exclusive_group(); cache.add_argument("--cache", dest="cache", action="store_true", default=True, help="reuse completed content/config cache (default)"); cache.add_argument("--no-cache", dest="cache", action="store_false", help="always submit matching local files again"); add_payload(p)
+    p.add_argument("directory", help="directory to scan recursively or non-recursively according to --glob"); p.add_argument("--glob", default="**/*", help="path glob relative to directory (default: %(default)s)"); p.add_argument("--region", choices=["global", "eu"], default="global", help="endpoint data residency"); wait = p.add_mutually_exclusive_group(); wait.add_argument("--wait", dest="wait", action="store_true", default=True, help="wait for each result before next file (default)"); wait.add_argument("--no-wait", dest="wait", action="store_false", help="submit every file and return queued jobs"); p.add_argument("--interval", type=float, default=3, help="seconds between polling requests (default: %(default)s)"); cache = p.add_mutually_exclusive_group(); cache.add_argument("--cache", dest="cache", action="store_true", default=True, help="reuse completed content/config cache (default)"); cache.add_argument("--no-cache", dest="cache", action="store_false", help="always submit matching local files again"); add_payload(p)
     p = parser(sub, "usage", "Report the local SQLite transcription ledger across every project. Only records calls made through aai.")
     p.add_argument("--month", help="ISO month filter, e.g. 2026-09; default: all recorded history")
     p = parser(sub, "doctor", "Validate ASSEMBLYAI_API_KEY against the API before a batch; does not transcribe audio.")
@@ -106,7 +115,7 @@ Automation: all successful structured results are JSON on stdout.  Use --compact
     if args.command == "transcribe":
         if args.source.startswith(("http://", "https://", "-")):
             result = ({"ok": True, "dry_run": True, "source": args.source, "request": body(args), "action": "No upload or transcript submission was made; remote/stdin duration and cache key cannot be determined locally."} if args.dry_run else prerecorded.submit(args))
-        else: result = batteries.one(args.source, body(args), args.region, args.wait, args.cache, args.dry_run)
+        else: result = batteries.one(args.source, body(args), args.region, args.wait, args.cache, args.dry_run, interval=args.interval)
         if not args.dry_run and args.wait:
             written = interactive.save_exports(result, args.source, args.exports, args.out_dir, args.region)
             if written: result["_aai_exports"] = written

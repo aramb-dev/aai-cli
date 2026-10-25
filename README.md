@@ -7,16 +7,26 @@
 ## Install
 
 ```sh
-pipx install aai-cli                 # recommended, once published
-# or, from a checkout:
-pipx install .
-# or: python3 -m pip install .
+pipx install aai-cli                 # recommended
+# or: uv tool install aai-cli
+# or, before the first PyPI release / for the latest main:
+pipx install git+https://github.com/aramb-dev/aai-cli.git
 
 export ASSEMBLYAI_API_KEY='your-key' # put this in your shell secret manager, never Git
 # Optional WebSocket commands:
-python3 -m pip install 'aai-cli[websocket]'
+pipx install 'aai-cli[websocket]'    # or: pipx inject aai-cli websockets
 
+aai --version
 aai doctor
+```
+
+Upgrade with `pipx upgrade aai-cli` (or `uv tool upgrade aai-cli`).
+
+No package manager? Each [GitHub release](https://github.com/aramb-dev/aai-cli/releases) also attaches `aai.pyz`, a single runnable file that needs only Python 3.9+:
+
+```sh
+curl -LO https://github.com/aramb-dev/aai-cli/releases/latest/download/aai.pyz
+python3 aai.pyz --version
 ```
 
 The package installs one `aai` executable. It has no runtime dependency for ordinary HTTP commands; Streaming and WebSocket commands require the optional `websockets` extra.
@@ -148,10 +158,10 @@ aai transcribe meeting.mp3 --wait
 
 # Remote source, speaker diarization, and language
 aai transcribe https://example.invalid/call.mp3 --wait \
-  --set speaker_labels=true --set language_code='"en_us"'
+  --set speaker_labels=true --set language_code=en_us
 
 # Medical transcription
-aai transcribe consultation.wav --wait --set domain='"medical-v1"' \
+aai transcribe consultation.wav --wait --set domain=medical-v1 \
   --set speaker_labels=true --set entity_detection=true
 
 # Privacy/redaction
@@ -169,15 +179,17 @@ The CLI does not try to freeze an enormous API schema into its option list. Ever
 aai transcribe input.mp3 --wait --params @request.json
 
 # Repeatable overrides. Values are JSON: true, 12, "string", [], {}, null.
+# Anything that is not valid JSON is sent as a plain string, so text needs no extra quotes.
 aai transcribe input.mp3 --wait \
+  --set speech_models='["universal-3-5-pro","universal-2"]' \
   --set keyterms_prompt='["AssemblyAI","Kubernetes"]' \
-  --set prompt='"Names include Ada Lovelace."' \
+  --set prompt='Names include Ada Lovelace.' \
   --set speaker_options.min_speakers_expected=2 \
   --set speaker_options.max_speakers_expected=4 \
   --set speech_understanding.request.translation.target_languages='["es","de"]'
 ```
 
-Dots construct nested objects. `--set` overrides fields loaded by `--params`. Consult the official API reference for valid combinations; the CLI sends your JSON unchanged after combining these inputs.
+Dots construct nested objects. `--set` overrides fields loaded by `--params`. Omitting `speech_models` uses the API default, Universal-3.5 Pro with Universal-2 as the fallback for languages it does not cover. Summaries now go through Speech Understanding (`--set speech_understanding.request.summarization.summary_type=bullets`); the top-level `summarization` field is deprecated. Consult the official API reference for valid combinations; the CLI sends your JSON unchanged after combining these inputs.
 
 `aai submit SOURCE` is the same submission path but returns immediately. `aai get ID`, `aai list`, `aai delete ID`, `aai search ID TERM...`, and `aai export ID {sentences,paragraphs,srt,vtt,redacted-audio}` manage completed jobs.
 
@@ -251,6 +263,8 @@ aai usage
 aai usage --month 2026-09
 ```
 
+Cache hits are listed but cost nothing: `audio_seconds` and `estimated_usd` count only audio that was actually submitted, and `cached_audio_seconds` shows what the cache saved.
+
 This is local usage visibility, not AssemblyAI’s authoritative invoice; it cannot see API calls made outside `aai`, and duration/cost are only as accurate as local inspection and the rate configured with `aai pricing`.
 
 ### Retry behavior
@@ -262,16 +276,18 @@ Safe GET requests (including polling) retry transient network errors, HTTP `429`
 ## Sync STT, LLM Gateway, streaming, and Voice Agents
 
 ```sh
-# Sync STT: local audio only; documented 80 ms–120 s range
-aai sync short.wav --content-type audio/wav --set language_code='"en"'
+# Sync STT: local audio only; 80 ms–20 min, 256 MB max; content type is guessed from the extension
+aai sync short.wav --set language_codes='["en"]'
+aai sync memo.m4a --region eu --set timestamps=true
 
 # LLM Gateway, OpenAI-compatible request shape
 aai chat --model MODEL --message system:'Be concise.' --message user:'Summarize this.'
 aai chat --model MODEL --params @chat-completion.json
 
-# Streaming V3 requires a WebSocket package and raw signed-16-bit PCM input
-python3 -m pip install --user 'websockets>=12'
+# Streaming V3 requires the websocket extra and raw PCM input; files are sent at real-time pace
+pipx inject aai-cli websockets
 aai stream --audio audio.pcm --sample-rate 16000 --set format_turns=true
+# Ctrl-C sends Terminate so the server flushes the last turn before closing
 
 # Browser/mobile temporary token
 aai token --expires 60 --max-session 600
@@ -283,7 +299,7 @@ aai token --expires 60 --max-session 600
 
 ## Research sources
 
-Implementation was checked against AssemblyAI primary documentation, fetched 2026-09-03:
+Implementation was checked against AssemblyAI primary documentation, last fetched 2026-10-25:
 
 - [Documentation index](https://assemblyai.com/docs/llms.txt)
 - [Complete documentation content](https://assemblyai.com/docs/llms-full.txt)
