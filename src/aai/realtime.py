@@ -21,21 +21,28 @@ def token(args):
 
 TERMINATE = '{"type":"Terminate"}'
 
-def _send_audio(socket, audio, chunk_bytes, chunk_seconds, stop, errors):
+def _send_audio(socket, audio, chunk_bytes, chunk_seconds, min_bytes, silence, stop, errors):
     """Send PCM at real-time pace; the API returns inconsistent turns when audio arrives faster."""
     try:
         with audio:
             while not stop.is_set() and (chunk := audio.read(chunk_bytes)):
+                # The API rejects messages under 50 ms, so pad a short final chunk with silence.
+                if len(chunk) < min_bytes: chunk += silence * (min_bytes - len(chunk))
                 socket.send(chunk); stop.wait(chunk_seconds)
         if not stop.is_set(): socket.send(TERMINATE)
     except Exception as exc:
         # Hand the failure to the receive loop and unblock it, rather than leaving it waiting.
         errors.append(exc); socket.close()
 
+def _is_termination(message):
+    # Match on the event type, not the raw text, so a transcript containing "Termination" doesn't end the stream.
+    try: return json.loads(message).get("type") == "Termination"
+    except (ValueError, AttributeError): return False
+
 def _drain(socket):
     for message in socket:
         print(message, flush=True)
-        if '"Termination"' in message: break
+        if _is_termination(message): break
 
 def stream(args):
     if not 50 <= args.chunk_ms <= 1000: fail("--chunk-ms must be between 50 and 1000", 12, False, "Streaming v3 accepts 50–1000 ms of audio per message.")
@@ -50,7 +57,9 @@ def stream(args):
     with connect()(f"wss://{host}/v3/ws?{urlencode(query, doseq=True)}", additional_headers={"authorization": api_key()}) as socket:
         if audio:
             chunk_bytes = max(1, args.sample_rate * bytes_per_sample * args.chunk_ms // 1000)
-            sender = threading.Thread(target=_send_audio, args=(socket, audio, chunk_bytes, args.chunk_ms / 1000, stop, errors), daemon=True)
+            min_bytes = args.sample_rate * bytes_per_sample * 50 // 1000
+            silence = b"\xff" if args.encoding == "pcm_mulaw" else b"\x00"  # mu-law silence is 0xFF
+            sender = threading.Thread(target=_send_audio, args=(socket, audio, chunk_bytes, args.chunk_ms / 1000, min_bytes, silence, stop, errors), daemon=True)
             sender.start()
         try: _drain(socket)
         except KeyboardInterrupt:

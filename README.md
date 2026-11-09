@@ -14,7 +14,7 @@ pipx install git+https://github.com/aramb-dev/aai-cli.git
 
 export ASSEMBLYAI_API_KEY='your-key' # put this in your shell secret manager, never Git
 # Optional WebSocket commands:
-pipx install 'aai-cli[websocket]'    # or: pipx inject aai-cli websockets
+pipx inject aai-cli websockets       # adds the extra to an existing install
 
 aai --version
 aai doctor
