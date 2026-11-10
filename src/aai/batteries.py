@@ -37,9 +37,9 @@ def duration(path):
         if match: return float(match.group(1))
     return None
 
-def key_for(path, request_body):
+def key_for(digest, request_body):
     normalized = dict(request_body); normalized.pop("audio_url", None)
-    return hashlib.sha256((file_hash(path) + json.dumps(normalized, sort_keys=True, separators=(",", ":"))).encode()).hexdigest()
+    return hashlib.sha256((digest + json.dumps(normalized, sort_keys=True, separators=(",", ":"))).encode()).hexdigest()
 
 def cache_get(key):
     path = CACHE / f"{key}.json"
@@ -57,7 +57,8 @@ def db():
 
 def record(source, digest, result, seconds, cache_hit, request_body):
     rate = config().get("estimated_usd_per_audio_hour")
-    cost = seconds / 3600 * rate if seconds is not None and isinstance(rate, (int, float)) else None
+    # A cache hit makes no API call, so it costs nothing.
+    cost = 0.0 if cache_hit else seconds / 3600 * rate if seconds is not None and isinstance(rate, (int, float)) else None
     with db() as conn: conn.execute("INSERT INTO transcriptions VALUES (?,?,?,?,?,?,?,?,?)", (datetime.now(timezone.utc).isoformat(), str(source), digest, result.get("id"), seconds, cost, result.get("status"), int(cache_hit), json.dumps(request_body, sort_keys=True)))
     return cost
 
@@ -65,23 +66,24 @@ def preview(path, request_body):
     seconds = duration(path); rate = config().get("estimated_usd_per_audio_hour")
     return {"source": str(path), "seconds": seconds, "minutes": round(seconds / 60, 3) if seconds is not None else None, "estimated_usd": round(seconds / 3600 * rate, 4) if seconds is not None and isinstance(rate, (int, float)) else None, "pricing_note": None if isinstance(rate, (int, float)) else f"Set estimated_usd_per_audio_hour in {CONFIG} to enable estimates.", "request": request_body}
 
-def one(path, request_body, region="global", wait=True, cache=True, dry_run=False, progress=True):
+def one(path, request_body, region="global", wait=True, cache=True, dry_run=False, progress=True, interval=3):
     path = Path(path).expanduser()
     if not path.is_file(): fail(f"not a file: {path}")
     info = preview(path, request_body)
     if dry_run: return {"action": "dry_run", **info}
-    cache_key = key_for(path, request_body)
+    digest = file_hash(path)  # hash once; large videos make this expensive
+    cache_key = key_for(digest, request_body)
     hit = cache_get(cache_key) if cache else None
     if hit:
         hit = {**hit, "_aai": {"cache_hit": True, "cache_key": cache_key}}
-        record(path, file_hash(path), hit, info["seconds"], True, request_body)
+        record(path, digest, hit, info["seconds"], True, request_body)
         return hit
     if progress: print(f"aai: submitting {path.name}", file=sys.stderr)
-    args = SimpleNamespace(source=str(path), region=region, params=json.dumps(request_body), set=[], wait=wait, interval=3)
+    args = SimpleNamespace(source=str(path), region=region, params=json.dumps(request_body), set=[], wait=wait, interval=interval)
     result = prerecorded.submit(args)
     result["_aai"] = {"cache_hit": False, "cache_key": cache_key}
     if result.get("status") == "completed": cache_put(cache_key, result)
-    record(path, file_hash(path), result, info["seconds"], False, request_body)
+    record(path, digest, result, info["seconds"], False, request_body)
     return result
 
 def batch(args):
@@ -91,15 +93,17 @@ def batch(args):
     results = []
     for index, path in enumerate(paths, 1):
         print(f"aai: [{index}/{len(paths)}] {path.name}", file=sys.stderr)
-        try: results.append(one(path, request_body, args.region, args.wait, args.cache, args.dry_run, False))
+        try: results.append(one(path, request_body, args.region, args.wait, args.cache, args.dry_run, False, args.interval))
         except SystemExit as exc: results.append({"source": str(path), "ok": False, "exit_code": exc.code})
     return {"directory": str(root), "glob": args.glob, "count": len(paths), "completed": sum(1 for item in results if item.get("status") == "completed"), "failed": sum(1 for item in results if item.get("ok") is False or item.get("status") == "error"), "results": results}
 
 def usage(args):
     clause, params = ("", []) if not args.month else (" WHERE at LIKE ?", [args.month + "%"])
     with db() as conn:
-        count, seconds, cost, hits = conn.execute("SELECT count(*), coalesce(sum(seconds),0), sum(estimated_usd), coalesce(sum(cache_hit),0) FROM transcriptions" + clause, params).fetchone()
-    return {"month": args.month, "transcriptions": count, "audio_seconds": seconds, "audio_minutes": round(seconds / 60, 2), "estimated_usd": round(cost, 4) if cost is not None else None, "cache_hits": hits, "ledger": str(DB), "pricing_note": None if cost is not None else f"Set estimated_usd_per_audio_hour in {CONFIG} to calculate spend."}
+        # Cache hits are reported separately: they never reached the API, so they are not billed audio.
+        count, seconds, cached, cost, hits = conn.execute("SELECT count(*), coalesce(sum(CASE WHEN cache_hit = 0 THEN seconds END),0), coalesce(sum(CASE WHEN cache_hit = 1 THEN seconds END),0), sum(CASE WHEN cache_hit = 0 THEN estimated_usd END), coalesce(sum(cache_hit),0) FROM transcriptions" + clause, params).fetchone()
+    if count == hits: cost = 0.0  # nothing was submitted, so the cost is known to be zero
+    return {"month": args.month, "transcriptions": count, "audio_seconds": seconds, "audio_minutes": round(seconds / 60, 2), "estimated_usd": round(cost, 4) if cost is not None else None, "cache_hits": hits, "cached_audio_seconds": cached, "ledger": str(DB), "pricing_note": None if cost is not None else f"Set estimated_usd_per_audio_hour in {CONFIG} to calculate spend."}
 
 def doctor():
     result = request("GET", "/v2/transcript", query={"limit": 1})
